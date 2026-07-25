@@ -1,11 +1,10 @@
-using HidLibrary;
-using Th850Library;
+Ôªøusing Th850Library;
 
 namespace Th850Test
 {
     public partial class Form1 : Form
     {
-        CancellationTokenSource _cts { get; set; }
+        private readonly CancellationTokenSource _cts = new();
 
         public Form1()
         {
@@ -14,7 +13,6 @@ namespace Th850Test
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            _cts = new CancellationTokenSource();
             Task.Run(() => Worker());
         }
 
@@ -22,50 +20,63 @@ namespace Th850Test
         {
             Th850Device? currentDevice = null;
             Th850Id? currentId = null;
-            while (!_cts.IsCancellationRequested)
+            try
             {
-                try
+                while (!_cts.IsCancellationRequested)
                 {
-                    var devices = Th850Devices.Enumerate();
-                    if (devices.Count() == 0)
+                    try
                     {
-                        // ÉfÉoÉCÉXÇ™å©Ç¬Ç©ÇÁÇ»Ç©Ç¡ÇΩ
-                        if (currentDevice != null)
+                        var devices = Th850Devices.Enumerate().ToList();
+                        if (devices.Count == 0)
                         {
-                            // deviceÇ™î≤Ç©ÇÍÇΩ
-                            Invoke(new Action(() => ClearData()));
-                            currentDevice = null;
-                            currentId = null;
+                            // „Éá„Éê„Ç§„Çπ„ÅåË¶ã„Å§„Åã„Çâ„Å™„Åã„Å£„Åü
+                            if (currentDevice != null)
+                            {
+                                // device„ÅåÊäú„Åã„Çå„Åü
+                                Invoke(new Action(() => ClearData()));
+                                currentDevice.Dispose();
+                                currentDevice = null;
+                                currentId = null;
+                            }
                         }
-                    }
-                    else
-                    {
-                        // ÉfÉoÉCÉXÇ™å©Ç¬Ç©Ç¡ÇΩ
-                        var detectedDevice = devices.First();
-                        var detectdId = detectedDevice.ReadId();
-                        if (currentId == null || detectdId.DeviceId != currentId.DeviceId)
+                        else
                         {
-                            // êVÇΩÇ»ÉfÉoÉCÉXÇ™å©Ç¬Ç©Ç¡ÇΩ
-                            currentDevice = detectedDevice;
-                            currentId = detectedDevice.ReadId();
-                            var data = detectedDevice.ReadData();
-                            Invoke(new Action(() => ShowData(currentId, data)));
-                        }
-                    }
+                            // „Éá„Éê„Ç§„Çπ„ÅåË¶ã„Å§„Åã„Å£„Åü
+                            var detectedDevice = devices[0];
+                            var detectedId = detectedDevice.ReadId();
+                            if (detectedId != null && (currentId == null || detectedId.DeviceId != currentId.DeviceId))
+                            {
+                                // Êñ∞„Åü„Å™„Éá„Éê„Ç§„Çπ„ÅåË¶ã„Å§„Åã„Å£„Åü
+                                currentDevice?.Dispose();
+                                currentDevice = detectedDevice;
+                                currentId = detectedId;
+                                var data = detectedDevice.ReadData();
+                                if (data != null)
+                                    Invoke(new Action(() => ShowData(currentId, data)));
+                            }
 
-                    // ë“ã@
-                    await Task.Delay(500, _cts.Token);
-                }
-                catch (Exception)
-                {
-                    if (_cts.IsCancellationRequested) return;
+                            // Âºï„ÅçÁ∂ô„Åå„Å™„Åã„Å£„Åü„Éá„Éê„Ç§„Çπ„ÅØËß£Êîæ„Åô„Çã
+                            foreach (var device in devices)
+                                if (!ReferenceEquals(device, currentDevice)) device.Dispose();
+                        }
+
+                        // ÂæÖÊ©ü
+                        await Task.Delay(500, _cts.Token);
+                    }
+                    catch (Exception)
+                    {
+                        if (_cts.IsCancellationRequested) return;
+                    }
                 }
             }
-
+            finally
+            {
+                currentDevice?.Dispose();
+            }
         }
 
         /// <summary>
-        /// TreeViewè¡ãé
+        /// TreeViewÊ∂àÂéª
         /// </summary>
         private void ClearData()
         {
@@ -73,11 +84,10 @@ namespace Th850Test
         }
 
         /// <summary>
-        /// TreeViewÇ…ÉfÅ[É^Çï\é¶
+        /// TreeView„Å´„Éá„Éº„Çø„ÇíË°®Á§∫
         /// </summary>
         /// <param name="id"></param>
         /// <param name="data"></param>
-        /// <exception cref="NotImplementedException"></exception>
         private void ShowData(Th850Id id, Th850Data data)
         {
             treeView.Nodes.Clear();
@@ -94,7 +104,7 @@ namespace Th850Test
             var dataNode = new TreeNode("DATA");
             dataNode.Nodes.Add($"Weight: {data.Weight}");
             dataNode.Nodes.Add($"Stride: {data.Stride}");
-            foreach(var dayly in data.DailyWorkouts)
+            foreach (var dayly in data.DailyWorkouts)
             {
                 var daylyNode = new TreeNode(dayly.Date.ToLongDateString());
                 daylyNode.Nodes.Add($"Step: {dayly.Step}");

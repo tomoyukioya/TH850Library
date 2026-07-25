@@ -1,18 +1,25 @@
 ﻿using HidLibrary;
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Th850Library
 {
-    public class Th850Device
+    public class Th850Device : IDisposable
     {
         private IHidDevice _hidDevice { get; set; }
+
+        /// <summary>
+        /// 受信用の非管理バッファ。デバイス1台につき一度だけ確保し Dispose() で解放する。
+        /// 呼び出しごとに確保・解放すると、タイムアウトで放置された ReadFile が
+        /// 解放済みの領域に書き込む恐れがあるため、寿命をデバイスに合わせている。
+        /// </summary>
+        private IntPtr _receiveBuffer = IntPtr.Zero;
+        private int _receiveBufferLength;
+        private bool _disposed;
 
         /// <summary>
         /// コンストラクタ
@@ -47,13 +54,13 @@ namespace Th850Library
         /// TH850にコマンド送信
         /// </summary>
         /// <param name="cmd"></param>
-        /// <param name="data"></param>
+        /// <param name="optionData"></param>
         /// <returns></returns>
         bool Send(Th850Cmd cmd, byte[] optionData)
         {
             try
             {
-                // optionDataは12byteになるまでゼロパディング
+                // optionDataは14byteになるまでゼロパディング
                 if (optionData == null) optionData = new byte[14];
                 if (optionData.Length < 14) Array.Resize(ref optionData, 14);
 
@@ -95,13 +102,13 @@ namespace Th850Library
             var overlapped = new NativeOverlapped();
             var bytesToRead = _hidDevice.Capabilities.InputReportByteLength;
             var buffer = new byte[bytesToRead];
-            var nonManagedBuffer = Marshal.AllocHGlobal(bytesToRead);
+            var nonManagedBuffer = EnsureReceiveBuffer(bytesToRead);
             var bytesRead = 0u;
             try
             {
-                while (totalBytesRead < 3 || totalBytesRead < (totalBuffer[1]<<8 | totalBuffer[2]))
+                while (totalBytesRead < 3 || totalBytesRead < (totalBuffer[1] << 8 | totalBuffer[2]))
                 {
-                    using(var cts = new CancellationTokenSource(100))
+                    using (var cts = new CancellationTokenSource(100))
                     {
                         var task = Task.Run(() => ReadFile(_hidDevice.ReadHandle, nonManagedBuffer, (uint)bytesToRead, out bytesRead, ref overlapped));
                         task.Wait(cts.Token);
@@ -110,34 +117,9 @@ namespace Th850Library
                     if (buffer[0] != 0) return null;
                     Array.Copy(buffer, 2, totalBuffer, totalBytesRead, buffer[1]);
                     totalBytesRead += buffer[1];
-
-                    //// デバイスからデータ読み込み
-                    //Task<HidDeviceData> task;
-                    //using(var cts = new CancellationTokenSource(1000))
-                    //{
-                    //    task = Task.Run(()=> _hidDevice.Read());
-                    //    task.Wait(cts.Token);
-                    //}
-                    //if (task.Result.Data[0] != 0x00) return null;
-                    //if (task.Result.Data[1] + 2 > task.Result.Data.Length) return null;
-
-                    //string o = $"{task.Result.Status.ToString()}";
-                    //foreach (var a in task.Result.Data) o+=$"{a:X2}";
-                    //Debug.WriteLine(o);
-
-                    //data.AddRange(task.Result.Data.Skip(2).Take(task.Result.Data[1]));
-
-                    //// データが完成したか
-                    //if (data.Count() > 0 && data[0] != 0x06) return null;
-                    //if (data.Count() < 4) continue;
-                    //var length = data[1] << 8 | data[2];
-                    //if (length > data.Count()) continue;
-                    //var sum = (byte)data.Take(data.Count() - 1).Sum(m => m);
-                    //if (sum != data[data.Count() - 1]) return null;
-                    //return data.ToArray();
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return null;
             }
@@ -146,6 +128,39 @@ namespace Th850Library
             var sum = (byte)totalBuffer.Take(totalBytesRead - 1).Sum(m => m);
             if (sum != totalBuffer[totalBytesRead - 1]) return null;
             else return totalBuffer.Take(totalBytesRead).ToArray();
+        }
+
+        /// <summary>
+        /// 受信バッファを必要な長さで確保する（確保済みで足りていればそれを使う）
+        /// </summary>
+        IntPtr EnsureReceiveBuffer(int length)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(Th850Device));
+
+            if (_receiveBuffer != IntPtr.Zero && _receiveBufferLength >= length) return _receiveBuffer;
+
+            if (_receiveBuffer != IntPtr.Zero) Marshal.FreeHGlobal(_receiveBuffer);
+            _receiveBuffer = Marshal.AllocHGlobal(length);
+            _receiveBufferLength = length;
+            return _receiveBuffer;
+        }
+
+        /// <summary>
+        /// 受信バッファとHIDデバイスを解放する
+        /// </summary>
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            if (_receiveBuffer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(_receiveBuffer);
+                _receiveBuffer = IntPtr.Zero;
+                _receiveBufferLength = 0;
+            }
+
+            (_hidDevice as IDisposable)?.Dispose();
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
